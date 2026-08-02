@@ -324,19 +324,23 @@ class ThreeDCamera(Camera):
         points = points - frame_center
         points = np.dot(points, rot_matrix.T)
         zs = points[:, 2]
-        for i in 0, 1:
-            if self.exponential_projection:
-                # Proper projection would involve multiplying
-                # x and y by d / (d-z).  But for points with high
-                # z value that causes weird artifacts, and applying
-                # the exponential helps smooth it out.
-                factor = np.exp(zs / focal_distance)
-                lt0 = zs < 0
-                factor[lt0] = focal_distance / (focal_distance - zs[lt0])
-            else:
-                factor = focal_distance / (focal_distance - zs)
-                factor[(focal_distance - zs) < 0] = 10**6
-            points[:, i] *= factor * zoom
+        # ``factor`` depends only on ``zs`` (column 2), which the assignments
+        # below never modify (they only touch columns 0 and 1), so compute it
+        # once instead of recomputing the same value for x and y.
+        if self.exponential_projection:
+            # Proper projection would involve multiplying
+            # x and y by d / (d-z).  But for points with high
+            # z value that causes weird artifacts, and applying
+            # the exponential helps smooth it out.
+            factor = np.exp(zs / focal_distance)
+            lt0 = zs < 0
+            factor[lt0] = focal_distance / (focal_distance - zs[lt0])
+        else:
+            factor = focal_distance / (focal_distance - zs)
+            factor[(focal_distance - zs) < 0] = 10**6
+        factor = factor * zoom
+        points[:, 0] *= factor
+        points[:, 1] *= factor
         return points
 
     def project_point(self, point: Point3D) -> Point3D:
