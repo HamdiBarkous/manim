@@ -378,6 +378,44 @@ class ThreeDCamera(Camera):
         else:
             return self.project_points(points)
 
+    def transform_points_pre_display_multiple(
+        self, vmobjects: list[VMobject]
+    ) -> list[Point3D_Array]:
+        """Batched version of :meth:`transform_points_pre_display`.
+
+        Regular (non-fixed) vmobjects are projected together through a single
+        :meth:`project_points` call on their concatenated points instead of
+        one call per vmobject; the projection is applied row-wise, so each
+        vmobject receives exactly the rows it would have received from an
+        individual call. Fixed-in-frame and fixed-orientation vmobjects keep
+        their original per-mobject handling.
+        """
+        results: list[Point3D_Array | None] = [None] * len(vmobjects)
+        batch_indices = []
+        batch_points = []
+        for i, vmobject in enumerate(vmobjects):
+            points = vmobject.points
+            # Same per-mobject finiteness guard as
+            # Camera.transform_points_pre_display.
+            if not np.all(np.isfinite(points)):
+                points = np.zeros((1, 3))
+            if vmobject in self.fixed_in_frame_mobjects:
+                results[i] = points
+            elif vmobject in self.fixed_orientation_mobjects:
+                center_func = self.fixed_orientation_mobjects[vmobject]
+                center = center_func()
+                new_center = self.project_point(center)
+                results[i] = points + (new_center - center)
+            else:
+                batch_indices.append(i)
+                batch_points.append(points)
+        if batch_points:
+            projected = self.project_points(np.concatenate(batch_points))
+            offsets = np.cumsum([0] + [len(p) for p in batch_points])
+            for j, i in enumerate(batch_indices):
+                results[i] = projected[offsets[j] : offsets[j + 1]]
+        return results  # type: ignore[return-value]
+
     def add_fixed_orientation_mobjects(
         self,
         *mobjects: Mobject,

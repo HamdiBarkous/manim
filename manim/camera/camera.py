@@ -671,10 +671,32 @@ class Camera:
             The Pixel array to add the VMobjects to.
         """
         ctx = self.get_cairo_context(pixel_array)
-        for vmobject in vmobjects:
-            self.display_vectorized(vmobject, ctx)
+        vmobjects = list(vmobjects)
+        transformed = self.transform_points_pre_display_multiple(vmobjects)
+        for vmobject, points in zip(vmobjects, transformed, strict=True):
+            self.display_vectorized(vmobject, ctx, points)
 
-    def display_vectorized(self, vmobject: VMobject, ctx: cairo.Context) -> Self:
+    def transform_points_pre_display_multiple(
+        self, vmobjects: list[VMobject]
+    ) -> list[Point3D_Array]:
+        """Applies :meth:`transform_points_pre_display` to the points of every
+        vmobject in the list, returning one transformed array per vmobject.
+
+        Subclasses whose transform is expensive per call (e.g. the projection
+        in :class:`~.ThreeDCamera`) can override this to process all vmobjects
+        in a single batched operation.
+        """
+        return [
+            self.transform_points_pre_display(vmobject, vmobject.points)
+            for vmobject in vmobjects
+        ]
+
+    def display_vectorized(
+        self,
+        vmobject: VMobject,
+        ctx: cairo.Context,
+        transformed_points: Point3D_Array | None = None,
+    ) -> Self:
         """Displays a VMobject in the cairo context
 
         Parameters
@@ -683,19 +705,28 @@ class Camera:
             The Vectorized Mobject to display
         ctx
             The cairo context to use.
+        transformed_points
+            The vmobject's points, already passed through
+            :meth:`transform_points_pre_display`. If None, they are computed
+            here.
 
         Returns
         -------
         Camera
             The camera object
         """
-        self.set_cairo_context_path(ctx, vmobject)
+        self.set_cairo_context_path(ctx, vmobject, transformed_points)
         self.apply_stroke(ctx, vmobject, background=True)
         self.apply_fill(ctx, vmobject)
         self.apply_stroke(ctx, vmobject)
         return self
 
-    def set_cairo_context_path(self, ctx: cairo.Context, vmobject: VMobject) -> Self:
+    def set_cairo_context_path(
+        self,
+        ctx: cairo.Context,
+        vmobject: VMobject,
+        transformed_points: Point3D_Array | None = None,
+    ) -> Self:
         """Sets a path for the cairo context with the vmobject passed
 
         Parameters
@@ -704,13 +735,21 @@ class Camera:
             The cairo context
         vmobject
             The VMobject
+        transformed_points
+            The vmobject's points, already passed through
+            :meth:`transform_points_pre_display`. If None, they are computed
+            here.
 
         Returns
         -------
         Camera
             Camera object after setting cairo_context_path
         """
-        points = self.transform_points_pre_display(vmobject, vmobject.points)
+        points = (
+            self.transform_points_pre_display(vmobject, vmobject.points)
+            if transformed_points is None
+            else transformed_points
+        )
         if len(points) == 0:
             return self
 
