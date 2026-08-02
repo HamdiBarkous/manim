@@ -1628,12 +1628,40 @@ def get_shaded_rgb(
         The color with added light or shadow, depending on the direction of the colored
         surface.
     """
+    shaded_rgb: FloatRGB = rgb + get_shading_light(
+        point, unit_normal_vect, light_source
+    )
+    return shaded_rgb
+
+
+def get_shading_light(
+    point: Point3D,
+    unit_normal_vect: Vector3D,
+    light_source: Point3D,
+) -> float:
+    """Compute the additive light (or shadow, if negative) term that
+    :func:`get_shaded_rgb` adds to a color for a surface located at ``point``
+    and facing in the direction of ``unit_normal_vect``.
+
+    Parameters
+    ----------
+    point
+        The location of the colored surface.
+    unit_normal_vect
+        The direction in which the colored surface is facing.
+    light_source
+        The location of a light source which might illuminate the surface.
+
+    Returns
+    -------
+    float
+        The light term to add to each RGB channel.
+    """
     to_sun = normalize(light_source - point)
-    light = 0.5 * np.dot(unit_normal_vect, to_sun) ** 3
+    light: float = 0.5 * np.dot(unit_normal_vect, to_sun) ** 3
     if light < 0:
         light *= 0.5
-    shaded_rgb: FloatRGB = rgb + light
-    return shaded_rgb
+    return light
 
 
 __all__ = [
@@ -1656,6 +1684,7 @@ __all__ = [
     "random_color",
     "RandomColorGenerator",
     "get_shaded_rgb",
+    "get_shading_light",
     "HSV",
     "RGBA",
 ]

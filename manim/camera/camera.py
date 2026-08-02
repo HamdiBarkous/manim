@@ -716,10 +716,11 @@ class Camera:
             The camera object
         """
         self.set_cairo_context_path(ctx, vmobject, transformed_points)
-        # The gradient start/end points (and their transform) are identical
-        # across the three color passes below, since nothing mutates the
-        # vmobject mid-display; memoize them for the duration of this pass.
-        pass_cache: dict[str, Point3D_Array] = {}
+        # The gradient start/end points (and their transform), as well as the
+        # 3D shading geometry, are identical across the three color passes
+        # below, since nothing mutates the vmobject mid-display; memoize them
+        # for the duration of this pass.
+        pass_cache: dict[str, Any] = {}
         self.apply_stroke(ctx, vmobject, background=True, pass_cache=pass_cache)
         self.apply_fill(ctx, vmobject, pass_cache=pass_cache)
         self.apply_stroke(ctx, vmobject, pass_cache=pass_cache)
@@ -814,7 +815,7 @@ class Camera:
         ctx: cairo.Context,
         rgbas: FloatRGBALike_Array,
         vmobject: VMobject,
-        pass_cache: dict[str, Point3D_Array] | None = None,
+        pass_cache: dict[str, Any] | None = None,
     ) -> Self:
         """Sets the color of the cairo context
 
@@ -855,7 +856,7 @@ class Camera:
         self,
         ctx: cairo.Context,
         vmobject: VMobject,
-        pass_cache: dict[str, Point3D_Array] | None = None,
+        pass_cache: dict[str, Any] | None = None,
     ) -> Self:
         """Fills the cairo context
 
@@ -872,7 +873,7 @@ class Camera:
             The camera object.
         """
         self.set_cairo_context_color(
-            ctx, self.get_fill_rgbas(vmobject), vmobject, pass_cache
+            ctx, self.get_fill_rgbas(vmobject, pass_cache), vmobject, pass_cache
         )
         ctx.fill_preserve()
         return self
@@ -882,7 +883,7 @@ class Camera:
         ctx: cairo.Context,
         vmobject: VMobject,
         background: bool = False,
-        pass_cache: dict[str, Point3D_Array] | None = None,
+        pass_cache: dict[str, Any] | None = None,
     ) -> Self:
         """Applies a stroke to the VMobject in the cairo context.
 
@@ -906,7 +907,7 @@ class Camera:
             return self
         self.set_cairo_context_color(
             ctx,
-            self.get_stroke_rgbas(vmobject, background=background),
+            self.get_stroke_rgbas(vmobject, background=background, pass_cache=pass_cache),
             vmobject,
             pass_cache,
         )
@@ -924,7 +925,10 @@ class Camera:
         return self
 
     def get_stroke_rgbas(
-        self, vmobject: VMobject, background: bool = False
+        self,
+        vmobject: VMobject,
+        background: bool = False,
+        pass_cache: dict[str, Any] | None = None,
     ) -> FloatRGBA_Array:
         """Gets the RGBA array for the stroke of the passed
         VMobject.
@@ -936,6 +940,8 @@ class Camera:
         background
             Whether or not to consider the background when getting the stroke
             RGBAs, by default False
+        pass_cache
+            An optional per-display-pass memo dict; unused by the base camera.
 
         Returns
         -------
@@ -944,13 +950,17 @@ class Camera:
         """
         return vmobject.get_stroke_rgbas(background)
 
-    def get_fill_rgbas(self, vmobject: VMobject) -> FloatRGBA_Array:
+    def get_fill_rgbas(
+        self, vmobject: VMobject, pass_cache: dict[str, Any] | None = None
+    ) -> FloatRGBA_Array:
         """Returns the RGBA array of the fill of the passed VMobject
 
         Parameters
         ----------
         vmobject
             The VMobject
+        pass_cache
+            An optional per-display-pass memo dict; unused by the base camera.
 
         Returns
         -------

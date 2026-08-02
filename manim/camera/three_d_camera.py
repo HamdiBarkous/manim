@@ -31,7 +31,7 @@ from .. import config
 from ..camera.camera import Camera
 from ..constants import *
 from ..mobject.types.point_cloud_mobject import Point
-from ..utils.color import get_shaded_rgb
+from ..utils.color import get_shading_light
 from ..utils.family import extract_mobject_family_members
 from ..utils.space_ops import rotation_about_z, rotation_matrix
 
@@ -111,28 +111,40 @@ class ThreeDCamera(Camera):
         ]
 
     def modified_rgbas(
-        self, vmobject: VMobject, rgbas: FloatRGBA_Array
+        self,
+        vmobject: VMobject,
+        rgbas: FloatRGBA_Array,
+        pass_cache: dict[str, Any] | None = None,
     ) -> FloatRGBA_Array:
         if not self.should_apply_shading:
             return rgbas
         if vmobject.shade_in_3d and (vmobject.get_num_points() > 0):
-            light_source_point = self.light_source.points[0]
+            # The shading light terms depend only on the vmobject's geometry
+            # and the light source, both of which are fixed for the duration
+            # of one display pass, so they are identical across the stroke,
+            # fill and background-stroke passes; memoize them.
+            if pass_cache is not None and "shading_lights" in pass_cache:
+                start_light, end_light = pass_cache["shading_lights"]
+            else:
+                light_source_point = self.light_source.points[0]
+                start_light = get_shading_light(
+                    get_3d_vmob_start_corner(vmobject),
+                    get_3d_vmob_start_corner_unit_normal(vmobject),
+                    light_source_point,
+                )
+                end_light = get_shading_light(
+                    get_3d_vmob_end_corner(vmobject),
+                    get_3d_vmob_end_corner_unit_normal(vmobject),
+                    light_source_point,
+                )
+                if pass_cache is not None:
+                    pass_cache["shading_lights"] = (start_light, end_light)
             if len(rgbas) < 2:
                 shaded_rgbas = rgbas.repeat(2, axis=0)
             else:
                 shaded_rgbas = np.array(rgbas[:2])
-            shaded_rgbas[0, :3] = get_shaded_rgb(
-                shaded_rgbas[0, :3],
-                get_3d_vmob_start_corner(vmobject),
-                get_3d_vmob_start_corner_unit_normal(vmobject),
-                light_source_point,
-            )
-            shaded_rgbas[1, :3] = get_shaded_rgb(
-                shaded_rgbas[1, :3],
-                get_3d_vmob_end_corner(vmobject),
-                get_3d_vmob_end_corner_unit_normal(vmobject),
-                light_source_point,
-            )
+            shaded_rgbas[0, :3] = shaded_rgbas[0, :3] + start_light
+            shaded_rgbas[1, :3] = shaded_rgbas[1, :3] + end_light
             return shaded_rgbas
         return rgbas
 
@@ -140,13 +152,16 @@ class ThreeDCamera(Camera):
         self,
         vmobject: VMobject,
         background: bool = False,
+        pass_cache: dict[str, Any] | None = None,
     ) -> FloatRGBA_Array:  # NOTE : DocStrings From parent
-        return self.modified_rgbas(vmobject, vmobject.get_stroke_rgbas(background))
+        return self.modified_rgbas(
+            vmobject, vmobject.get_stroke_rgbas(background), pass_cache
+        )
 
     def get_fill_rgbas(
-        self, vmobject: VMobject
+        self, vmobject: VMobject, pass_cache: dict[str, Any] | None = None
     ) -> FloatRGBA_Array:  # NOTE : DocStrings From parent
-        return self.modified_rgbas(vmobject, vmobject.get_fill_rgbas())
+        return self.modified_rgbas(vmobject, vmobject.get_fill_rgbas(), pass_cache)
 
     def get_mobjects_to_display(
         self, *args: Any, **kwargs: Any
