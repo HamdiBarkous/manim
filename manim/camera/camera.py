@@ -716,9 +716,13 @@ class Camera:
             The camera object
         """
         self.set_cairo_context_path(ctx, vmobject, transformed_points)
-        self.apply_stroke(ctx, vmobject, background=True)
-        self.apply_fill(ctx, vmobject)
-        self.apply_stroke(ctx, vmobject)
+        # The gradient start/end points (and their transform) are identical
+        # across the three color passes below, since nothing mutates the
+        # vmobject mid-display; memoize them for the duration of this pass.
+        pass_cache: dict[str, Point3D_Array] = {}
+        self.apply_stroke(ctx, vmobject, background=True, pass_cache=pass_cache)
+        self.apply_fill(ctx, vmobject, pass_cache=pass_cache)
+        self.apply_stroke(ctx, vmobject, pass_cache=pass_cache)
         return self
 
     def set_cairo_context_path(
@@ -806,7 +810,11 @@ class Camera:
         return self
 
     def set_cairo_context_color(
-        self, ctx: cairo.Context, rgbas: FloatRGBALike_Array, vmobject: VMobject
+        self,
+        ctx: cairo.Context,
+        rgbas: FloatRGBALike_Array,
+        vmobject: VMobject,
+        pass_cache: dict[str, Point3D_Array] | None = None,
     ) -> Self:
         """Sets the color of the cairo context
 
@@ -829,8 +837,13 @@ class Camera:
             # encodes it in reverse order
             ctx.set_source_rgba(*rgbas[0][2::-1], rgbas[0][3])
         else:
-            points = vmobject.get_gradient_start_and_end_points()
-            points = self.transform_points_pre_display(vmobject, points)
+            if pass_cache is not None and "gradient_points" in pass_cache:
+                points = pass_cache["gradient_points"]
+            else:
+                gradient_points = vmobject.get_gradient_start_and_end_points()
+                points = self.transform_points_pre_display(vmobject, gradient_points)
+                if pass_cache is not None:
+                    pass_cache["gradient_points"] = points
             pat = cairo.LinearGradient(*it.chain(*(point[:2] for point in points)))
             offsets = np.linspace(0, 1, len(rgbas))
             for rgba, offset in zip(rgbas, offsets, strict=True):
@@ -838,7 +851,12 @@ class Camera:
             ctx.set_source(pat)
         return self
 
-    def apply_fill(self, ctx: cairo.Context, vmobject: VMobject) -> Self:
+    def apply_fill(
+        self,
+        ctx: cairo.Context,
+        vmobject: VMobject,
+        pass_cache: dict[str, Point3D_Array] | None = None,
+    ) -> Self:
         """Fills the cairo context
 
         Parameters
@@ -853,12 +871,18 @@ class Camera:
         Camera
             The camera object.
         """
-        self.set_cairo_context_color(ctx, self.get_fill_rgbas(vmobject), vmobject)
+        self.set_cairo_context_color(
+            ctx, self.get_fill_rgbas(vmobject), vmobject, pass_cache
+        )
         ctx.fill_preserve()
         return self
 
     def apply_stroke(
-        self, ctx: cairo.Context, vmobject: VMobject, background: bool = False
+        self,
+        ctx: cairo.Context,
+        vmobject: VMobject,
+        background: bool = False,
+        pass_cache: dict[str, Point3D_Array] | None = None,
     ) -> Self:
         """Applies a stroke to the VMobject in the cairo context.
 
@@ -884,6 +908,7 @@ class Camera:
             ctx,
             self.get_stroke_rgbas(vmobject, background=background),
             vmobject,
+            pass_cache,
         )
         ctx.set_line_width(
             width
