@@ -1779,7 +1779,7 @@ class VMobject(Mobject):
         nppcc = self.n_points_per_cubic_curve
         return self.points[nppcc - 1 :: nppcc]
 
-    def get_anchors(self) -> list[Point3D]:
+    def get_anchors(self) -> Point3D_Array:
         """Returns the anchors of the curves forming the VMobject.
 
         Returns
@@ -1792,7 +1792,14 @@ class VMobject(Mobject):
 
         s = self.get_start_anchors()
         e = self.get_end_anchors()
-        return list(it.chain.from_iterable(zip(s, e, strict=True)))
+        # Interleave [s0, e0, s1, e1, ...] with numpy instead of a Python
+        # zip/chain/list: identical values, far fewer interpreter operations.
+        if len(s) != len(e):  # preserve the original strict-zip semantics
+            raise ValueError("VMobject.get_anchors: mismatched anchor counts")
+        anchors = np.empty((2 * len(s), self.points.shape[1]), dtype=self.points.dtype)
+        anchors[0::2] = s
+        anchors[1::2] = e
+        return anchors
 
     def get_points_defining_boundary(self) -> Point3D_Array:
         # Probably returns all anchors, but this is weird regarding  the name of the method.
