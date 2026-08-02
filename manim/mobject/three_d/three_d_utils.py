@@ -58,7 +58,10 @@ def get_3d_vmob_end_corner(vmob: VMobject) -> Point3D:
 
 def get_3d_vmob_unit_normal(vmob: VMobject, point_index: int) -> Vector3D:
     n_points = vmob.get_num_points()
-    if len(vmob.get_anchors()) <= 2:
+    # A vmobject needs more than a single cubic curve (4 points / 2 anchors) to
+    # define a normal. Equivalent to ``len(vmob.get_anchors()) <= 2`` for any
+    # valid vmobject, but avoids building the anchor array just to count it.
+    if n_points <= 4:
         return np.array(UP)
     i = point_index
     im3 = i - 3 if i > 2 else (n_points - 4)
