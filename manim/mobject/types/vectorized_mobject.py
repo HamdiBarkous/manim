@@ -1803,9 +1803,14 @@ class VMobject(Mobject):
 
     def get_points_defining_boundary(self) -> Point3D_Array:
         # Probably returns all anchors, but this is weird regarding  the name of the method.
-        return np.array(
-            tuple(it.chain(*(sm.get_anchors() for sm in self.get_family())))
-        )
+        # Concatenating the per-submobject anchor arrays is equivalent to
+        # chaining their rows and rebuilding an array from them, but does the
+        # copy in one operation instead of row by row.
+        anchors = [sm.get_anchors() for sm in self.get_family()]
+        if not any(len(a) for a in anchors):
+            # Preserve the empty shape the previous implementation returned.
+            return np.array(())
+        return np.concatenate(anchors)
 
     def get_arc_length(self, sample_points_per_curve: int | None = None) -> float:
         """Return the approximated length of the whole curve.
