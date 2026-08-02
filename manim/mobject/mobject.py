@@ -2282,12 +2282,21 @@ class Mobject:
         all_points = self.get_points_defining_boundary()
         if len(all_points) == 0:
             return result
+        # Compute the per-dimension min/max in two batched reductions, then pick
+        # the value for each dimension. This is equivalent to calling
+        # get_extremum_along_dim once per dimension (min for key<0, max for
+        # key>0, midpoint for key==0), but avoids the per-call overhead across
+        # the millions of get_critical_point calls a render makes.
+        mins = np.min(all_points, axis=0)
+        maxs = np.max(all_points, axis=0)
         for dim in range(self.dim):
-            result[dim] = self.get_extremum_along_dim(
-                all_points,
-                dim=dim,
-                key=np.array(direction[dim]),
-            )
+            d = direction[dim]
+            if d < 0:
+                result[dim] = mins[dim]
+            elif d == 0:
+                result[dim] = (mins[dim] + maxs[dim]) / 2
+            else:
+                result[dim] = maxs[dim]
         return result
 
     # Pseudonyms for more general get_critical_point method

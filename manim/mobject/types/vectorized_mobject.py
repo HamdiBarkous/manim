@@ -1452,7 +1452,11 @@ class VMobject(Mobject):
         is_split = ~np.all(is_close, axis=1)
 
         split_points = np.concatenate([[0], boundary_indices[is_split], [n_pts]])
-        return np.stack([split_points[:-1], split_points[1:]], axis=1)
+        # Build the (n_subpaths, 2) result directly; cheaper than np.stack.
+        out = np.empty((split_points.size - 1, 2), dtype=split_points.dtype)
+        out[:, 0] = split_points[:-1]
+        out[:, 1] = split_points[1:]
+        return out
 
     def get_subpaths(self) -> list[CubicSpline]:
         """Returns subpaths formed by the curves of the VMobject.
