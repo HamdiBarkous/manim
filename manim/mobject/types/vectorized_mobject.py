@@ -1524,7 +1524,8 @@ class VMobject(Mobject):
             sample_points = 10
 
         curve = self.get_nth_curve_function(n)
-        points = np.array([curve(a) for a in np.linspace(0, 1, sample_points)])
+        # bezier() requires a column vector to evaluate all samples at once.
+        points = curve(np.linspace(0, 1, sample_points).reshape(-1, 1))
         diffs = points[1:] - points[:-1]
         norms = np.linalg.norm(diffs, axis=1)
 
