@@ -25,6 +25,7 @@ from manim.utils.color import ManimColor, ParsableManimColor, color_to_int_rgba
 from manim.utils.family import extract_mobject_family_members
 from manim.utils.images import get_full_raster_image_path
 from manim.utils.iterables import list_difference_update
+from manim.utils.simple_functions import unit_linspace
 from manim.utils.space_ops import cross2d
 
 if TYPE_CHECKING:
@@ -846,7 +847,7 @@ class Camera:
                 if pass_cache is not None:
                     pass_cache["gradient_points"] = points
             pat = cairo.LinearGradient(*it.chain(*(point[:2] for point in points)))
-            offsets = np.linspace(0, 1, len(rgbas))
+            offsets = unit_linspace(len(rgbas))
             for rgba, offset in zip(rgbas, offsets, strict=True):
                 pat.add_color_stop_rgba(offset, *rgba[2::-1], rgba[3])
             ctx.set_source(pat)

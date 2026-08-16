@@ -45,6 +45,7 @@ from manim.utils.iterables import (
     stretch_array_to_length,
     tuplify,
 )
+from manim.utils.simple_functions import unit_linspace
 from manim.utils.space_ops import rotate_vector, shoelace_direction
 
 if TYPE_CHECKING:
@@ -1525,7 +1526,7 @@ class VMobject(Mobject):
 
         curve = self.get_nth_curve_function(n)
         # bezier() requires a column vector to evaluate all samples at once.
-        points = curve(np.linspace(0, 1, sample_points).reshape(-1, 1))
+        points = curve(unit_linspace(sample_points).reshape(-1, 1))
         diffs = points[1:] - points[:-1]
         norms = np.linalg.norm(diffs, axis=1)
 

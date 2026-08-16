@@ -124,6 +124,32 @@ def clip(a: ComparableT, min_a: ComparableT, max_a: ComparableT) -> ComparableT:
     return a
 
 
+_unit_linspace_cache: dict[int, np.ndarray] = {}
+_UNIT_LINSPACE_CACHE_SIZE = 32
+
+
+def unit_linspace(n: int) -> np.ndarray:
+    """Return ``np.linspace(0, 1, n)``, reusing a cached array for repeated ``n``.
+
+    The render hot path rebuilds a handful of distinct unit intervals over a
+    million times per scene, so the results are memoized. The returned array is
+    **shared and read-only**: callers must treat it as immutable, and any
+    attempt to write to it raises instead of corrupting other callers.
+
+    Not part of the public API.
+    """
+    # Only exact ints are cached, so unusual arguments keep numpy's own behaviour.
+    if type(n) is not int:
+        return np.linspace(0, 1, n)
+    values = _unit_linspace_cache.get(n)
+    if values is None:
+        values = np.linspace(0, 1, n)
+        values.flags.writeable = False
+        if len(_unit_linspace_cache) < _UNIT_LINSPACE_CACHE_SIZE:
+            _unit_linspace_cache[n] = values
+    return values
+
+
 def sigmoid(x: float) -> float:
     r"""Returns the output of the logistic function.
 
