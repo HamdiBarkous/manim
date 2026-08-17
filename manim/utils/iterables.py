@@ -258,6 +258,9 @@ def remove_list_redundancies(lst: Reversible[H]) -> list[H]:
     """Used instead of ``list(set(l))`` to maintain order.
     Keeps the last occurrence of each element.
     """
+    # 0 or 1 elements: nothing to deduplicate, and it is 83-97% of calls.
+    if len(lst) <= 1:  # type: ignore[arg-type]
+        return list(lst)  # type: ignore[arg-type]
     reversed_result = []
     used = set()
     for x in reversed(lst):

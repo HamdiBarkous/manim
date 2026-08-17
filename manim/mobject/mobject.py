@@ -2574,6 +2574,8 @@ class Mobject:
         :meth:`~.Mobject.family_members_with_points`, :meth:`~.Mobject.align_data`
 
         """
+        if not self.submobjects:
+            return [self]
         sub_families = [x.get_family() for x in self.submobjects]
         all_mobjects = [self] + list(it.chain(*sub_families))
         return remove_list_redundancies(all_mobjects)
