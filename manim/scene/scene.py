@@ -192,6 +192,8 @@ class Scene:
         self.stop_condition: Callable[[], bool] | None = None
         self.moving_mobjects: list[Mobject] = []
         self.static_mobjects: list[Mobject] = []
+        # Static mobjects that changed anyway during the current play.
+        self._changed_static_mobjects: set[Mobject] = set()
         self.time_progression: tqdm[float] | None = None
         self.duration: float = 0.0
         self.last_t = 0.0
@@ -967,6 +969,7 @@ class Scene:
                 mob in animation_mobjects
                 or len(mob.updaters) > 0
                 or mob in self.foreground_mobjects
+                or mob in self._changed_static_mobjects
                 or any(consider_moving(m) for m in mob.submobjects)
             )
 
@@ -1367,6 +1370,7 @@ class Scene:
         if config.renderer == RendererType.CAIRO:
             # Paint all non-moving objects onto the screen, so they don't
             # have to be rendered every frame
+            self._changed_static_mobjects = set()
             (
                 self.moving_mobjects,
                 self.static_mobjects,

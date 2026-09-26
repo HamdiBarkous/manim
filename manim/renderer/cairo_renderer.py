@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import sys
+import warnings
 from collections.abc import Iterable
+from operator import attrgetter, methodcaller
 from typing import TYPE_CHECKING, Any
+
+import numpy as np
 
 from manim.utils.hashing import get_hash_from_play_call
 
@@ -9,8 +14,12 @@ from .. import config, logger
 from .._config.video_encoder import video_encoder_fingerprint
 from ..camera.camera import Camera
 from ..mobject.mobject import Mobject, _AnimationBuilder
+from ..mobject.types.image_mobject import AbstractImageMobject
+from ..mobject.types.point_cloud_mobject import PMobject
+from ..mobject.types.vectorized_mobject import VMobject
 from ..scene.scene_file_writer import SceneFileWriter
 from ..utils.exceptions import EndSceneEarlyException
+from ..utils.family import extract_mobject_family_members
 from ..utils.iterables import list_update
 from .protocol import RendererCapabilities
 
@@ -58,6 +67,8 @@ class CairoRenderer:
         self.num_plays = 0
         self.time = 0.0
         self.static_image: PixelArray | None = None
+        self._static_watch: _StaticFrameWatch | None = None
+        self._resplits = 0
 
     def init_scene(
         self,
@@ -131,7 +142,15 @@ class CairoRenderer:
             # In this case, as there is only a wait, it will be the length of the wait.
             self.freeze_current_frame(scene.duration)
         else:
-            scene.play_internal()
+            if not self.skip_animations:
+                self._static_watch = _StaticFrameWatch.for_play(scene)
+                self._resplits = 0
+            try:
+                scene.play_internal()
+            finally:
+                if self._static_watch is not None:
+                    self._static_watch.close()
+                    self._static_watch = None
         self.file_writer.end_animation(not self.skip_animations)
 
         self.num_plays += 1
@@ -180,8 +199,37 @@ class CairoRenderer:
         time: float,
         moving_mobjects: Iterable[Mobject] | None = None,
     ) -> None:
+        if self._static_watch is not None:
+            moving_mobjects = self._refresh_static_frame(scene)
         self.update_frame(scene, moving_mobjects)
         self.add_frame(self.get_frame())
+
+    def _refresh_static_frame(self, scene: Scene) -> list[Mobject]:
+        """Repaint the static frame if something painted into it changed
+        since, and return the mobjects to draw over it.
+        """
+        watch = self._static_watch
+        assert watch is not None
+        assert scene.animations is not None
+        changed = watch.changed()
+        if changed is None:
+            return scene.moving_mobjects
+        if not changed:
+            moving = watch.resettle()
+            if moving is not None:
+                scene.moving_mobjects = moving
+                return moving
+        self._resplits += 1
+        if self._resplits > _MAX_RESPLITS:
+            changed = watch.members
+        watch.close()
+        scene._changed_static_mobjects.update(changed)
+        moving, static = scene.get_moving_and_static_mobjects(scene.animations)
+        if static != scene.static_mobjects:
+            self.save_static_frame_data(scene, static)
+        scene.moving_mobjects, scene.static_mobjects = moving, static
+        self._static_watch = _StaticFrameWatch(scene)
+        return moving
 
     def get_frame(self) -> PixelArray:
         """Gets the current frame as NumPy array.
@@ -297,3 +345,300 @@ class CairoRenderer:
                 self.static_image = None
                 self.update_frame(scene)
             self.file_writer.save_image(self.get_frame())
+
+
+_tobytes = methodcaller("tobytes")
+
+# What the camera draws of each kind of mobject: its arrays, and its plain
+# values.
+_DRAWN: list[tuple[type[Mobject], tuple[str, ...], tuple[str, ...]]] = [
+    (
+        VMobject,
+        ("points", "fill_rgbas", "stroke_rgbas", "background_stroke_rgbas"),
+        ("stroke_width", "background_stroke_width", "joint_type", "cap_style"),
+    ),
+    (PMobject, ("points", "rgbas"), ("stroke_width",)),
+    (AbstractImageMobject, ("points",), ("resampling_algorithm",)),
+    (Mobject, ("points",), ()),
+]
+
+# Resplitting more often than this in one play gives up on the static frame.
+_MAX_RESPLITS = 3
+
+
+def _references(namespace: dict[str, Any], name: str) -> int:
+    return sys.getrefcount(namespace[name])
+
+
+# The count :func:`_references` gives for a value held by its namespace alone.
+_ALONE = _references({"value": object()}, "value")
+
+
+class _Kind:
+    """The watched mobjects of one kind in :data:`_DRAWN`, and a snapshot of
+    their structure, their values and which arrays they hold.
+    """
+
+    def __init__(
+        self, mobjects: list[Mobject], arrays: tuple[str, ...], values: tuple[str, ...]
+    ) -> None:
+        self.arrays = arrays
+        self.get = attrgetter("submobjects", "z_index", *values, *arrays)
+        self.mobjects = [m for m in mobjects if self._readable(m)]
+        self.state: list[tuple[Any, ...]] = []
+
+    def _readable(self, mobject: Mobject) -> bool:
+        try:
+            _, _, *rest = self.get(mobject)
+            values = rest[: len(rest) - len(self.arrays)]
+            arrays = rest[len(values) :]
+            return all(isinstance(a, np.ndarray) for a in arrays) and bool(
+                values == values
+            )
+        except Exception:
+            return False
+
+    def snapshot(self) -> None:
+        self.state = [(list(sub), *rest) for sub, *rest in map(self.get, self.mobjects)]
+
+    def changed(self) -> list[Mobject]:
+        try:
+            # Arrays compare as themselves: identical, or not at all.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                if list(map(self.get, self.mobjects)) == self.state:
+                    return []
+        except ValueError:
+            pass
+        return [
+            m
+            for m, then in zip(self.mobjects, self.state, strict=True)
+            if not all(map(_same, self.get(m), then))
+        ]
+
+
+def _same(now: Any, then: Any) -> bool:
+    if isinstance(now, np.ndarray) or isinstance(then, np.ndarray):
+        return now is then
+    return bool(now == then)
+
+
+class _Pool:
+    """Arrays moved into one buffer, each attribute left holding a view of
+    its part, so a single comparison sees a write to any of them.
+
+    Only arrays nothing else refers to are moved, so no reference to the
+    old array is left behind, and :meth:`release` gives them back their
+    own memory when nothing else refers to the view either.
+    """
+
+    def __init__(self, entries: list[tuple[Mobject, str]]) -> None:
+        self.entries = entries
+        arrays = [m.__dict__[name] for m, name in entries]
+        sizes = np.array([a.size for a in arrays], dtype=np.intp)
+        self.ends = np.cumsum(sizes)
+        self.data = (
+            np.concatenate([a.ravel() for a in arrays]) if arrays else np.empty(0)
+        )
+        self.saved = self.data.copy()
+        self.views = [
+            self.data[end - size : end].reshape(a.shape)
+            for a, size, end in zip(arrays, sizes, self.ends, strict=True)
+        ]
+        del arrays
+        for (m, name), view in zip(entries, self.views, strict=True):
+            m.__dict__[name] = view
+
+    @staticmethod
+    def takes(mobject: Mobject, name: str) -> bool:
+        namespace = mobject.__dict__
+        if name not in namespace or _references(namespace, name) != _ALONE:
+            return False
+        a = namespace[name]
+        return (
+            type(a) is np.ndarray
+            and a.base is None
+            and a.dtype == np.float64
+            and a.flags.c_contiguous
+            and a.flags.writeable
+        )
+
+    def changed(self) -> list[Mobject]:
+        # Bitwise, so that a NaN left as it was is no change.
+        differ = self.data.view(np.int64) != self.saved.view(np.int64)
+        if not differ.any():
+            return []
+        parts = np.unique(
+            np.searchsorted(self.ends, np.flatnonzero(differ), side="right")
+        )
+        return [self.entries[i][0] for i in parts]
+
+    def release(self) -> None:
+        views, self.views = self.views, []
+        for i, (m, name) in enumerate(self.entries):
+            namespace = m.__dict__
+            if (
+                namespace.get(name) is views[i]
+                and _references(namespace, name) == _ALONE + 1  # and views
+            ):
+                namespace[name] = namespace[name].copy()
+
+
+class _StaticFrameWatch:
+    """Watches, during a play, the mobjects painted once into the static frame.
+
+    They are the mobjects before the first one that is animated or has
+    updaters, so nothing is expected to change them. Yet code that runs
+    every frame, like an updater, can change any mobject, not only its
+    own, and add or remove mobjects. :meth:`changed` notices, comparing
+    what the camera draws of each against a snapshot. The camera's own
+    mobjects are watched too: moving the camera moves everything.
+    """
+
+    def __init__(self, scene: Scene) -> None:
+        self.scene = scene
+        self.roots = _roots(scene)
+        moving = set(scene.moving_mobjects)
+        self.members = [
+            m for m in extract_mobject_family_members(self.roots) if m not in moving
+        ]
+        members = set(self.members)
+        self.static_roots = [
+            r for r in self.roots if members.intersection(r.get_family())
+        ]
+        # Static roots wholly static and first: then adding or removing
+        # others leaves the static frame as it is.
+        first = self.roots[: len(self.static_roots)] == self.static_roots
+        self.clean = first and not any(
+            moving.intersection(r.get_family()) for r in self.static_roots
+        )
+        camera = scene.renderer.camera
+        assert isinstance(camera, Camera)
+        self.camera_mobjects = [
+            m for m in _camera_mobjects(camera) if self.members and m not in moving
+        ]
+        # Each mobject goes to the first kind it is and whose snapshot can
+        # hold it; the last kind, points only, takes nearly anything.
+        unkind = list(dict.fromkeys([*self.members, *self.camera_mobjects]))
+        self.kinds = []
+        for t, arrays, values in _DRAWN:
+            kind = _Kind([m for m in unkind if isinstance(m, t)], arrays, values)
+            taken = set(kind.mobjects)
+            unkind = [m for m in unkind if m not in taken]
+            self.kinds.append(kind)
+        entries = [
+            (m, name) for k in self.kinds for m in k.mobjects for name in k.arrays
+        ]
+        pooled: list[tuple[Mobject, str]] = []
+        self.loose: list[tuple[Mobject, str]] = []
+        for entry in entries:
+            (pooled if _Pool.takes(*entry) else self.loose).append(entry)
+        self.pool = _Pool(pooled)
+        self.loose_bytes = self._loose_bytes()
+        for kind in self.kinds:
+            kind.snapshot()
+        self.images = [
+            (m, pixels.copy())
+            for m in self.members
+            if isinstance(pixels := vars(m).get("pixel_array"), np.ndarray)
+        ]
+
+    @classmethod
+    def for_play(cls, scene: Scene) -> _StaticFrameWatch | None:
+        """A watch over the current play, or ``None`` if the play runs no
+        code but manim's own animations, which only change their mobjects.
+        """
+        assert scene.animations is not None
+        if (
+            scene.updaters
+            or any(m.updaters for m in scene.moving_mobjects)
+            or any(map(_runs_foreign_code, scene.animations))
+        ):
+            return cls(scene)
+        return None
+
+    def close(self) -> None:
+        for kind in self.kinds:
+            kind.state = []
+        self.pool.release()
+
+    def changed(self) -> list[Mobject] | None:
+        """The watched mobjects changed since the snapshot, all of them if
+        the camera moved; an empty list if only which mobjects are in the
+        scene changed; ``None`` if nothing did.
+        """
+        try:
+            found = self._changed()
+        except Exception:
+            # Something is unreadable now: assume everything changed
+            # rather than guess.
+            found = self.members
+        if any(m in found for m in self.camera_mobjects):
+            return self.members
+        if found:
+            return found
+        if _roots(self.scene) != self.roots:
+            return []
+        return None
+
+    def resettle(self) -> list[Mobject] | None:
+        """After mobjects were only added or removed: the new moving
+        mobjects if the static frame still holds, else ``None``.
+        """
+        roots = _roots(self.scene)
+        n = len(self.static_roots)
+        if not self.clean or roots[:n] != self.static_roots:
+            return None
+        self.roots = roots
+        return extract_mobject_family_members(
+            roots[n:], use_z_index=self.scene.renderer.camera.use_z_index
+        )
+
+    def _changed(self) -> list[Mobject]:
+        found = [m for kind in self.kinds for m in kind.changed()]
+        found += self.pool.changed()
+        if self._loose_bytes() != self.loose_bytes:
+            found += [
+                m
+                for (m, name), then in zip(self.loose, self.loose_bytes, strict=True)
+                if _tobytes(getattr(m, name)) != then
+            ]
+        found += [
+            m
+            for m, pixels in self.images
+            if not np.array_equal(vars(m)["pixel_array"], pixels)
+        ]
+        return found
+
+    def _loose_bytes(self) -> list[bytes]:
+        return [_tobytes(getattr(m, name)) for m, name in self.loose]
+
+
+def _roots(scene: Scene) -> list[Mobject]:
+    return list_update(scene.mobjects, scene.foreground_mobjects)
+
+
+def _camera_mobjects(camera: Camera) -> list[Mobject]:
+    """The mobjects whose change moves the camera."""
+    from ..camera.moving_camera import MovingCamera
+    from ..camera.three_d_camera import ThreeDCamera
+
+    if isinstance(camera, MovingCamera):
+        return camera.get_mobjects_indicating_movement()
+    if isinstance(camera, ThreeDCamera):
+        return [*camera.get_value_trackers(), camera._frame_center]
+    return []
+
+
+def _runs_foreign_code(animation: Animation) -> bool:
+    """Whether ``animation`` runs code other than manim's each frame, which
+    may change mobjects other than the animated ones.
+    """
+    from ..animation.updaters.update import UpdateFromFunc
+
+    if isinstance(animation, UpdateFromFunc):
+        return True
+    if not type(animation).__module__.startswith("manim."):
+        return True
+    inner = [*getattr(animation, "animations", []), getattr(animation, "anim", None)]
+    return any(_runs_foreign_code(a) for a in inner if a is not None)
