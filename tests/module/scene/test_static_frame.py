@@ -1,5 +1,6 @@
 """Mobjects painted once into the static frame of a play must still show
-what the code running each frame, like updaters, does to them.
+what the code running each frame, like updaters, does to them, and every
+frame must keep the draw order of the whole scene.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from manim import (
     Dot,
     Mobject,
     MovingCameraScene,
+    Rectangle,
     Scene,
     Square,
     UpdateFromAlphaFunc,
@@ -20,7 +22,7 @@ from manim import (
     VGroup,
     VMobject,
 )
-from manim.constants import RIGHT, UP
+from manim.constants import DOWN, LEFT, RIGHT, UP
 from manim.renderer.cairo_renderer import CairoRenderer, _StaticFrameWatch
 
 
@@ -160,7 +162,8 @@ def test_static_mobjects_changed_during_a_play_are_drawn(render, scene_class):
 def test_a_frame_rendered_without_moving_mobjects_draws_everything(render):
     class FinishedFrame(Scene):
         """Renders the finished state as one more frame of the play, passing
-        no moving mobjects: the whole scene."""
+        no moving mobjects: the whole scene.
+        """
 
         def play_internal(self, skip_rendering=False):
             super().play_internal(skip_rendering)
@@ -220,3 +223,86 @@ def test_arrays_are_given_back_after_the_play(render):
         assert getattr(scene.square, name).base is None
     # A reference taken during the play still is the circle's.
     assert scene.circle.points is scene.kept[0]
+
+
+def hill():
+    return Rectangle(width=15, height=4, fill_opacity=1, stroke_width=0).shift(DOWN * 2)
+
+
+def tree():
+    return (
+        Circle(fill_opacity=1, stroke_width=0).shift(LEFT * 4 + DOWN).set_z_index(-2.5)
+    )
+
+
+def spinning():
+    return Square().shift(RIGHT * 4 + UP).add_updater(lambda m, dt: m.rotate(dt))
+
+
+class LowChildOfAGroupAfterTheMovingOne(Scene):
+    def construct(self):
+        hills = VGroup(hill())
+        hills[0].set_z_index(-3)
+        self.add(spinning(), hills, tree())
+        self.wait(0.5)
+
+
+class GroupUpdaterMovesItsLowChild(Scene):
+    def construct(self):
+        hills = VGroup(hill())
+        hills[0].set_z_index(-3)
+        hills.add_updater(lambda m, dt: m.shift(UP * dt))
+        self.add(spinning(), hills, tree())
+        self.wait(0.5)
+
+
+class LowChildOfAForegroundGroup(Scene):
+    def construct(self):
+        hills = VGroup(hill())
+        hills[0].set_z_index(-3)
+        self.add(spinning(), tree())
+        self.add_foreground_mobject(hills)
+        self.wait(0.5)
+
+
+class LowChildOfANestedGroup(Scene):
+    def construct(self):
+        outer = VGroup(VGroup(hill().set_z_index(-3)), Square().shift(UP * 3))
+        self.add(spinning(), outer, tree())
+        self.wait(0.3)
+        outer.add_updater(lambda m, dt: m.shift(RIGHT * dt))
+        self.wait(0.3)
+
+
+class LowChildSharedByTwoGroups(Scene):
+    def construct(self):
+        low = hill().set_z_index(-3)
+        self.add(spinning(), VGroup(low), tree(), VGroup(low, Square().shift(UP * 3)))
+        self.wait(0.5)
+
+
+class LowMobjectAddedDuringAPlay(Scene):
+    def construct(self):
+        low = hill().set_z_index(-3)
+
+        def add_once(m, dt):
+            if self.renderer.time > 0.2 and low not in self.mobjects:
+                self.add(low)
+
+        self.add(tree(), spinning().add_updater(add_once))
+        self.wait(0.5)
+
+
+@pytest.mark.parametrize(
+    "scene_class",
+    [
+        LowChildOfAGroupAfterTheMovingOne,
+        GroupUpdaterMovesItsLowChild,
+        LowChildOfAForegroundGroup,
+        LowChildOfANestedGroup,
+        LowChildSharedByTwoGroups,
+        LowMobjectAddedDuringAPlay,
+    ],
+)
+def test_frames_keep_the_draw_order(render, scene_class):
+    render(scene_class)

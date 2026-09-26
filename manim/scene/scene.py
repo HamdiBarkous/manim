@@ -64,7 +64,7 @@ from ..utils import opengl, space_ops
 from ..utils.exceptions import RerunSceneException
 from ..utils.family import extract_mobject_family_members
 from ..utils.family_ops import restructure_list_to_exclude_certain_family_members
-from ..utils.iterables import list_difference_update, list_update
+from ..utils.iterables import list_update
 from ..utils.module_ops import scene_classes_from_file
 
 if TYPE_CHECKING:
@@ -939,10 +939,8 @@ class Scene:
             The list of mobjects that could be moving in
             the Animation(s)
         """
-        # Go through mobjects from start to end, and
-        # as soon as there's one that needs updating of
-        # some kind per frame, return the list from that
-        # mobject's earliest ancestor.
+        # Go through mobjects in draw order, and as soon as
+        # there's one that could move, return the list from it on.
         # Imported inside the method to avoid cyclic import.
         from ..animation.composition import AnimationGroup
 
@@ -962,18 +960,29 @@ class Scene:
 
         animation_mobjects = set(_collect_animation_mobjects(animations))
 
-        mobjects = self.get_mobject_family_members()
-
-        def consider_moving(mob: Mobject) -> bool:
+        def moves(mob: Mobject) -> bool:
             return (
                 mob in animation_mobjects
                 or len(mob.updaters) > 0
                 or mob in self.foreground_mobjects
                 or mob in self._changed_static_mobjects
-                or any(consider_moving(m) for m in mob.submobjects)
             )
 
-        i = next((i for i, mob in enumerate(mobjects) if consider_moving(mob)), None)
+        # A group moving moves its members; a moving member moves its groups.
+        moving: set[Mobject] = set()
+
+        def walk(mob: Mobject, groups: list[Mobject]) -> None:
+            if moves(mob):
+                moving.update(mob.get_family())
+                moving.update(groups)
+            for submob in mob.submobjects:
+                walk(submob, [*groups, mob])
+
+        for mob in list_update(self.mobjects, self.foreground_mobjects):
+            walk(mob, [])
+
+        mobjects = self.get_mobject_family_members()
+        i = next((i for i, mob in enumerate(mobjects) if mob in moving), None)
         return [] if i is None else mobjects[i:]
 
     def get_moving_and_static_mobjects(
@@ -986,15 +995,10 @@ class Scene:
             only_those_with_points=True,
         )
         moving_mobjects = self.get_moving_mobjects(*animations)
-        all_moving_mobject_families = extract_mobject_family_members(
-            moving_mobjects,
-            use_z_index=self.renderer.camera.use_z_index,
-        )
-        static_mobjects = list_difference_update(
-            all_mobject_families,
-            all_moving_mobject_families,
-        )
-        return all_moving_mobject_families, static_mobjects
+        # Static is what comes before the cut: moving families are not taken whole.
+        moving = set(moving_mobjects)
+        static_mobjects = [m for m in all_mobject_families if m not in moving]
+        return moving_mobjects, static_mobjects
 
     def compile_animations(
         self,

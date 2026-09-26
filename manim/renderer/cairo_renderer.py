@@ -67,6 +67,7 @@ class CairoRenderer:
         self.num_plays = 0
         self.time = 0.0
         self.static_image: PixelArray | None = None
+        self._static_members: set[Mobject] = set()
         self._static_watch: _StaticFrameWatch | None = None
         self._resplits = 0
 
@@ -137,14 +138,14 @@ class CairoRenderer:
         self.save_static_frame_data(scene, scene.static_mobjects)
 
         if scene.is_current_animation_frozen_frame():
-            self.update_frame(scene, mobjects=scene.moving_mobjects)
+            self._update_play_frame(scene)
             # self.duration stands for the total run time of all the animations.
             # In this case, as there is only a wait, it will be the length of the wait.
             self.freeze_current_frame(scene.duration)
         else:
+            self._resplits = 0
             if not self.skip_animations:
                 self._static_watch = _StaticFrameWatch.for_play(scene)
-                self._resplits = 0
             try:
                 scene.play_internal()
             finally:
@@ -170,7 +171,8 @@ class CairoRenderer:
         scene
 
         mobjects
-            list of mobjects
+            The mobjects to draw, over the static frame if there is one.
+            ``None`` draws the whole scene.
 
         include_submobjects
 
@@ -180,7 +182,7 @@ class CairoRenderer:
         """
         if self.skip_animations and not ignore_skipping:
             return
-        if not mobjects:
+        if mobjects is None:
             mobjects = list_update(
                 scene.mobjects,
                 scene.foreground_mobjects,
@@ -199,38 +201,77 @@ class CairoRenderer:
         time: float,
         moving_mobjects: Iterable[Mobject] | None = None,
     ) -> None:
-        # Without moving mobjects the whole scene is drawn, which needs no watch.
-        if self._static_watch is not None and moving_mobjects is not None:
-            moving_mobjects = self._refresh_static_frame(scene)
-        self.update_frame(scene, moving_mobjects)
+        if moving_mobjects is None:  # the whole scene, which needs no watch
+            self.update_frame(scene)
+        else:
+            if self._static_watch is not None:
+                self._refresh_static_frame(scene)
+            self._update_play_frame(scene)
         self.add_frame(self.get_frame())
 
-    def _refresh_static_frame(self, scene: Scene) -> list[Mobject]:
-        """Repaint the static frame if something painted into it changed
-        since, and return the mobjects to draw over it.
+    def _update_play_frame(self, scene: Scene) -> None:
+        """Draw a frame of a play: the static frame, then every mobject it
+        does not hold, in the scene's draw order as it is now, so that
+        mobjects added during the play are drawn too. A mobject sorted
+        before one the static frame holds splits the scene again.
+        """
+        order = self._draw_order(scene)
+        if self.static_image is not None and not self._follows_static_frame(order):
+            self._resplit(scene)
+            order = self._draw_order(scene)
+        if self.static_image is not None:
+            order = [m for m in order if m not in self._static_members]
+        self.update_frame(scene, mobjects=order, include_submobjects=False)
+
+    def _draw_order(self, scene: Scene) -> list[Mobject]:
+        return self.camera.get_mobjects_to_display(
+            list_update(scene.mobjects, scene.foreground_mobjects)
+        )
+
+    def _follows_static_frame(self, order: list[Mobject]) -> bool:
+        """Whether everything the static frame holds comes first."""
+        drawing = False
+        for mobject in order:
+            if mobject not in self._static_members:
+                drawing = True
+            elif drawing:
+                return False
+        return True
+
+    def _refresh_static_frame(self, scene: Scene) -> None:
+        """Split the scene again if something painted into the static
+        frame changed since.
         """
         watch = self._static_watch
         assert watch is not None
-        assert scene.animations is not None
         changed = watch.changed()
         if changed is None:
-            return scene.moving_mobjects
+            return
         if not changed:
             moving = watch.resettle()
             if moving is not None:
                 scene.moving_mobjects = moving
-                return moving
+                return
+        self._resplit(scene, changed)
+
+    def _resplit(self, scene: Scene, changed: Iterable[Mobject] = ()) -> None:
+        """Split the scene into static and moving mobjects again, the
+        changed ones moving, and repaint the static frame if it changed.
+        """
+        assert scene.animations is not None
         self._resplits += 1
         if self._resplits > _MAX_RESPLITS:
-            changed = watch.members
-        watch.close()
+            changed = scene.get_mobject_family_members()
+        watch = self._static_watch
+        if watch is not None:
+            watch.close()
         scene._changed_static_mobjects.update(changed)
         moving, static = scene.get_moving_and_static_mobjects(scene.animations)
         if static != scene.static_mobjects:
             self.save_static_frame_data(scene, static)
         scene.moving_mobjects, scene.static_mobjects = moving, static
-        self._static_watch = _StaticFrameWatch(scene)
-        return moving
+        if watch is not None:
+            self._static_watch = _StaticFrameWatch(scene)
 
     def get_frame(self) -> PixelArray:
         """Gets the current frame as NumPy array.
@@ -301,9 +342,11 @@ class CairoRenderer:
             The static image computed. The return value is None if there are no static mobjects in the scene.
         """
         self.static_image = None
+        self._static_members = set(static_mobjects or ())
         if not static_mobjects:
             return None
-        self.update_frame(scene, mobjects=static_mobjects)
+        # Already each mobject of the family, in draw order.
+        self.update_frame(scene, mobjects=static_mobjects, include_submobjects=False)
         self.static_image = self.get_frame()
         return self.static_image
 
