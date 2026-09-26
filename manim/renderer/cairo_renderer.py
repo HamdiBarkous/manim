@@ -199,7 +199,8 @@ class CairoRenderer:
         time: float,
         moving_mobjects: Iterable[Mobject] | None = None,
     ) -> None:
-        if self._static_watch is not None:
+        # Without moving mobjects the whole scene is drawn, which needs no watch.
+        if self._static_watch is not None and moving_mobjects is not None:
             moving_mobjects = self._refresh_static_frame(scene)
         self.update_frame(scene, moving_mobjects)
         self.add_frame(self.get_frame())

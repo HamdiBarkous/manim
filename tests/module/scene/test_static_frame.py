@@ -157,6 +157,23 @@ def test_static_mobjects_changed_during_a_play_are_drawn(render, scene_class):
     render(scene_class)
 
 
+def test_a_frame_rendered_without_moving_mobjects_draws_everything(render):
+    class FinishedFrame(Scene):
+        """Renders the finished state as one more frame of the play, passing
+        no moving mobjects: the whole scene."""
+
+        def play_internal(self, skip_rendering=False):
+            super().play_internal(skip_rendering)
+            self.renderer.render(self, self.duration)
+
+        def construct(self):
+            self.add(Square(fill_opacity=1))
+            self.add(Dot().add_updater(lambda m, dt: m.shift(RIGHT * dt)))
+            self.wait(0.2)
+
+    render(FinishedFrame)
+
+
 def test_the_static_frame_is_repainted_once(render, monkeypatch):
     paints = []
     save = CairoRenderer.save_static_frame_data
