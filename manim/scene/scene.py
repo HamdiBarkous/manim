@@ -182,9 +182,12 @@ class Scene:
         always_update_mobjects: bool = False,
         random_seed: int | None = None,
         skip_animations: bool = False,
+        render_finished_frame: bool = False,
     ) -> None:
         self.camera_class = camera_class
         self.always_update_mobjects = always_update_mobjects
+        # Each play ends with one more frame, of its finished state.
+        self.render_finished_frame = render_finished_frame
         self.random_seed = random_seed if random_seed is not None else config.seed
         self.skip_animations = skip_animations
 
@@ -1419,6 +1422,12 @@ class Scene:
             animation.clean_up_from_scene(self)
         if not self.renderer.skip_animations:
             self.update_mobjects(0)
+        if (
+            self.render_finished_frame
+            and not skip_rendering
+            and not self.skip_animation_preview
+        ):
+            self.renderer.render(self, self.duration, self.moving_mobjects)
         # TODO: The OpenGLRenderer does not have the property static.image.
         self.renderer.static_image = None  # type: ignore[union-attr]
         # Closing the progress bar at the end of the play.

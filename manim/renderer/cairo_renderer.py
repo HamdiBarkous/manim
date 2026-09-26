@@ -142,6 +142,8 @@ class CairoRenderer:
             # self.duration stands for the total run time of all the animations.
             # In this case, as there is only a wait, it will be the length of the wait.
             self.freeze_current_frame(scene.duration)
+            if scene.render_finished_frame:
+                self.add_frame(self.get_frame())
         else:
             self._resplits = 0
             if not self.skip_animations:
@@ -201,12 +203,10 @@ class CairoRenderer:
         time: float,
         moving_mobjects: Iterable[Mobject] | None = None,
     ) -> None:
-        if moving_mobjects is None:  # the whole scene, which needs no watch
-            self.update_frame(scene)
-        else:
-            if self._static_watch is not None:
-                self._refresh_static_frame(scene)
-            self._update_play_frame(scene)
+        # Each frame is drawn from the scene as it is, so moving_mobjects is not needed.
+        if self._static_watch is not None:
+            self._refresh_static_frame(scene)
+        self._update_play_frame(scene)
         self.add_frame(self.get_frame())
 
     def _update_play_frame(self, scene: Scene) -> None:

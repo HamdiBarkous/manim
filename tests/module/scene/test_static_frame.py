@@ -159,22 +159,33 @@ def test_static_mobjects_changed_during_a_play_are_drawn(render, scene_class):
     render(scene_class)
 
 
-def test_a_frame_rendered_without_moving_mobjects_draws_everything(render):
-    class FinishedFrame(Scene):
-        """Renders the finished state as one more frame of the play, passing
-        no moving mobjects: the whole scene.
-        """
+@pytest.mark.parametrize("finished", [False, True])
+def test_a_play_can_end_on_its_finished_state(render, monkeypatch, finished):
+    """Three plays of a second each, at 15 frames per second: an animation,
+    a wait with nothing moving and a wait with an updater. Each can end
+    with one more frame, of its finished state.
+    """
+    frames = []
+    add_frame = CairoRenderer.add_frame
 
-        def play_internal(self, skip_rendering=False):
-            super().play_internal(skip_rendering)
-            self.renderer.render(self, self.duration)
+    def counted(self, frame, num_frames=1):
+        frames.extend([frame] * num_frames)
+        add_frame(self, frame, num_frames)
+
+    monkeypatch.setattr(CairoRenderer, "add_frame", counted)
+
+    class ThreePlays(Scene):
+        def __init__(self):
+            super().__init__(render_finished_frame=finished)
 
         def construct(self):
-            self.add(Square(fill_opacity=1))
-            self.add(Dot().add_updater(lambda m, dt: m.shift(RIGHT * dt)))
-            self.wait(0.2)
+            self.play(Square().animate.shift(RIGHT), run_time=1)
+            self.wait(1)
+            self.add(Dot().add_updater(lambda m, dt: m.shift(UP * dt)))
+            self.wait(1)
 
-    render(FinishedFrame)
+    render(ThreePlays)
+    assert len(frames) == 3 * (15 + finished)
 
 
 def test_the_static_frame_is_repainted_once(render, monkeypatch):

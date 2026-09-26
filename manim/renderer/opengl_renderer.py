@@ -851,7 +851,8 @@ class OpenGLRenderer:
             ):
                 self.file_writer.write_frame(
                     self.get_frame(),
-                    repeat=int(config.frame_rate * scene.duration),
+                    repeat=int(config.frame_rate * scene.duration)
+                    + int(scene.render_finished_frame),
                 )
 
             if self.window is not None:
