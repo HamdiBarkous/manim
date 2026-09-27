@@ -143,6 +143,21 @@ class RerunSceneHandler(FileSystemEventHandler):
         self.queue.put(SceneInteractRerun("file"))
 
 
+def _animated_mobjects(animations: Iterable[Animation]) -> list[Mobject]:
+    """The mobjects the animations animate, nested animations included."""
+    # Imported inside the function to avoid cyclic import.
+    from ..animation.composition import AnimationGroup
+
+    found: list[Mobject] = []
+    for anim in animations:
+        # Keep composition wrappers as conservative boundaries for the
+        # static frame cache, in addition to their nested animations.
+        found.extend(anim.mobject.get_family())
+        if isinstance(anim, AnimationGroup):
+            found.extend(_animated_mobjects(anim.animations))
+    return found
+
+
 class Scene:
     """A Scene is the canvas of your animation.
 
@@ -944,24 +959,18 @@ class Scene:
         """
         # Go through mobjects in draw order, and as soon as
         # there's one that could move, return the list from it on.
-        # Imported inside the method to avoid cyclic import.
-        from ..animation.composition import AnimationGroup
+        moving = self._moving_set(animations)
 
-        def _collect_animation_mobjects(
-            nested_animations: Iterable[Animation],
-        ) -> list[Mobject | OpenGLMobject]:
-            animation_mobjects: list[Mobject | OpenGLMobject] = []
-            for anim in nested_animations:
-                # Keep composition wrappers as conservative boundaries for the
-                # static frame cache, in addition to their nested animations.
-                animation_mobjects.extend(anim.mobject.get_family())
-                if isinstance(anim, AnimationGroup):
-                    animation_mobjects.extend(
-                        _collect_animation_mobjects(anim.animations),
-                    )
-            return animation_mobjects
+        mobjects = self.get_mobject_family_members()
+        i = next((i for i, mob in enumerate(mobjects) if mob in moving), None)
+        return [] if i is None else mobjects[i:]
 
-        animation_mobjects = set(_collect_animation_mobjects(animations))
+    def _moving_set(self, animations: Iterable[Animation]) -> set[Mobject]:
+        """What the animations and the updaters move: what is animated, has
+        updaters, is in the foreground or changed during the play, with its
+        family and the groups it is in.
+        """
+        animation_mobjects = set(_animated_mobjects(animations))
 
         def moves(mob: Mobject) -> bool:
             return (
@@ -983,10 +992,7 @@ class Scene:
 
         for mob in list_update(self.mobjects, self.foreground_mobjects):
             walk(mob, [])
-
-        mobjects = self.get_mobject_family_members()
-        i = next((i for i, mob in enumerate(mobjects) if mob in moving), None)
-        return [] if i is None else mobjects[i:]
+        return moving
 
     def get_moving_and_static_mobjects(
         self, animations: Iterable[Animation]

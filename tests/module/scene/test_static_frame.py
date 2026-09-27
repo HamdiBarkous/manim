@@ -9,11 +9,18 @@ import numpy as np
 import pytest
 
 from manim import (
+    BLUE,
+    RED,
+    CapStyleType,
     Circle,
     Create,
     Dot,
+    ImageMobject,
+    Line,
+    ManimColor,
     Mobject,
     MovingCameraScene,
+    Polygon,
     Rectangle,
     Scene,
     Square,
@@ -317,3 +324,258 @@ class LowMobjectAddedDuringAPlay(Scene):
 )
 def test_frames_keep_the_draw_order(render, scene_class):
     render(scene_class)
+
+
+def circles(n=40, fill=0.6):
+    """Still circles on the left half."""
+    return VGroup(
+        *[
+            Circle(0.18, fill_opacity=fill, stroke_width=4).move_to([x, y, 0])
+            for x in np.arange(-6.5, -0.4, 0.45)
+            for y in np.arange(-3.4, 3.5, 0.5)
+        ][:n]
+    )
+
+
+def wheel(hub=RIGHT * 3.5):
+    spokes = VGroup(
+        *[
+            Line(hub, hub + 1.5 * np.array([np.cos(a), np.sin(a), 0]))
+            for a in np.arange(0, 2 * np.pi, np.pi / 6)
+        ]
+    )
+    spokes.add_updater(lambda m, dt: m.rotate(-2 * dt, about_point=hub))
+    return VGroup(Circle(1.5).move_to(hub), spokes)
+
+
+class StillInFrontOfTheMovingOne(Scene):
+    def construct(self):
+        self.add(wheel(), circles(), Line(RIGHT * 2, RIGHT * 5, stroke_width=8))
+        self.wait(0.5)
+
+
+class MovingOnBothSides(Scene):
+    def construct(self):
+        dot = Dot(LEFT * 3).add_updater(lambda m, dt: m.shift(RIGHT * 2 * dt))
+        squares = VGroup(
+            *[Square(0.5, fill_opacity=0.8).move_to([x, 0, 0]) for x in range(-4, 4)]
+        )
+        self.add(wheel(), circles(20), dot, squares)
+        self.wait(0.5)
+
+
+class StillChangedByAnotherUpdater(Scene):
+    def construct(self):
+        still = circles(20)
+        w = wheel()
+        w.add_updater(lambda m, dt: still[5].shift(UP * dt))
+        self.add(w, still)
+        self.wait(0.5)
+
+
+class TranslucentStillStacked(Scene):
+    def construct(self):
+        halo = VGroup(
+            *[
+                Circle(0.65 + 0.18 * k, stroke_width=0, fill_opacity=0.1).shift(
+                    RIGHT * 3.5
+                )
+                for k in range(6)
+            ]
+        )
+        self.add(
+            Rectangle(width=15, height=9, fill_opacity=1, stroke_width=0), wheel(), halo
+        )
+        self.wait(0.5)
+
+
+class MovingRebuiltEveryFrame(Scene):
+    def construct(self):
+        clock = [0.0]
+
+        def flap(m, dt):
+            clock[0] += dt
+            m.become(Square(fill_opacity=0.5).rotate(clock[0]).shift(RIGHT * 3))
+
+        self.add(Square().add_updater(flap), circles(20))
+        self.wait(0.5)
+
+
+class ImageAndGradientInFront(Scene):
+    def construct(self):
+        pixels = np.uint8(
+            [
+                [[255, 0, 0, 255], [0, 255, 0, 128]],
+                [[0, 0, 255, 200], [255, 255, 0, 60]],
+            ]
+        )
+        image = ImageMobject(pixels).scale(2).shift(RIGHT * 3)
+        gradient = (
+            Square(2, fill_opacity=1)
+            .set_color([RED, BLUE])
+            .set_sheen(0.4, UP)
+            .shift(RIGHT * 3)
+        )
+        self.add(wheel(), image, gradient)
+        self.wait(0.5)
+
+
+class ThickMiterStroke(Scene):
+    def construct(self):
+        spike = Polygon(
+            [-0.05, -0.6, 0],
+            [0.05, -0.6, 0],
+            [0, 0.9, 0],
+            stroke_width=24,
+            fill_opacity=0.3,
+        )
+        spike.shift(RIGHT * 2).add_updater(lambda m, dt: m.rotate(1.3 * dt))
+        self.add(spike, circles())
+        self.wait(0.5)
+
+
+class SquareCapsAndBackgroundStroke(Scene):
+    def construct(self):
+        line = (
+            Line(LEFT, RIGHT, stroke_width=30)
+            .set_cap_style(CapStyleType.SQUARE)
+            .shift(RIGHT * 2)
+        )
+        line.set_stroke(width=40, background=True).add_updater(
+            lambda m, dt: m.rotate(dt)
+        )
+        self.add(line, circles())
+        self.wait(0.5)
+
+
+class HalfOffScreen(Scene):
+    def construct(self):
+        disc = Circle(1.5, fill_opacity=0.7).move_to(RIGHT * 7 + UP * 3.5)
+        self.add(disc.add_updater(lambda m, dt: m.shift(LEFT * dt)), circles())
+        self.wait(0.5)
+
+
+class MovingBehindTranslucent(Scene):
+    def construct(self):
+        dot = Dot(LEFT * 3, radius=0.3).add_updater(
+            lambda m, dt: m.shift(RIGHT * 3 * dt)
+        )
+        cover = Rectangle(width=8, height=2, fill_opacity=0.35, stroke_width=6)
+        self.add(circles(20), dot, cover)
+        self.wait(0.5)
+
+
+class MovingImageAndHuge(Scene):
+    def construct(self):
+        pixels = np.uint8(
+            [
+                [[255, 0, 0, 255], [0, 255, 0, 128]],
+                [[0, 0, 255, 200], [255, 255, 0, 60]],
+            ]
+        )
+        image = ImageMobject(pixels).scale(1.5).shift(RIGHT * 3)
+        huge = Square(7.5, fill_opacity=0.2).add_updater(
+            lambda m, dt: m.rotate(0.3 * dt)
+        )
+        self.add(
+            image.add_updater(lambda m, dt: m.shift(DOWN * dt)),
+            circles(20),
+            huge,
+            Square(0.5).shift(UP * 3),
+        )
+        self.wait(0.5)
+
+
+class StillChangedBetweenPlays(Scene):
+    def construct(self):
+        still = circles(20)
+        self.add(wheel(), still)
+        self.wait(0.3)
+        still[3].shift(UP * 0.4).set_color(RED)
+        still[4].become(Square(0.3, fill_opacity=1).move_to(still[4]))
+        self.wait(0.3)
+
+
+class CameraBackgroundChanges(Scene):
+    def construct(self):
+        clock = [0.0]
+
+        def dusk(m, dt):
+            clock[0] += dt
+            if 0.2 < clock[0] < 0.3:
+                self.camera.background_color = ManimColor("#203040")
+                self.camera.init_background()
+
+        self.add(wheel(), circles(20), Mobject().add_updater(dusk))
+        self.wait(0.5)
+
+
+class CameraMovesOverStill(MovingCameraScene):
+    def construct(self):
+        self.add(wheel(), circles(20))
+        self.camera.frame.add_updater(lambda m, dt: m.shift(RIGHT * 0.5 * dt))
+        self.wait(0.5)
+
+
+@pytest.mark.parametrize(
+    "scene_class",
+    [
+        StillInFrontOfTheMovingOne,
+        MovingOnBothSides,
+        StillChangedByAnotherUpdater,
+        TranslucentStillStacked,
+        MovingRebuiltEveryFrame,
+        ImageAndGradientInFront,
+        ThickMiterStroke,
+        SquareCapsAndBackgroundStroke,
+        HalfOffScreen,
+        MovingBehindTranslucent,
+        MovingImageAndHuge,
+        StillChangedBetweenPlays,
+        CameraBackgroundChanges,
+        CameraMovesOverStill,
+    ],
+)
+def test_frames_repaint_only_what_moves_and_what_is_drawn_over_it(render, scene_class):
+    render(scene_class)
+
+
+def test_a_frame_draws_what_moves_and_the_still_mobjects_it_reaches(
+    render, monkeypatch
+):
+    """A spinning square on the right, 40 still circles on the left and one
+    still line over the square: after the first frame, which paints the still
+    ones once, a frame draws the square and the line.
+    """
+    from manim.camera.camera import Camera
+
+    drawn: list[int] = []
+    fill = Camera.apply_fill
+
+    def counted(self, ctx, vmobject):
+        if drawn and drawn[-1] is not None:  # inside a frame, not the fixture's check
+            drawn[-1] += 1
+        return fill(self, ctx, vmobject)
+
+    monkeypatch.setattr(Camera, "apply_fill", counted)
+    paint = CairoRenderer._update_play_frame
+
+    def framed(self, scene):
+        drawn.append(0)
+        paint(self, scene)
+        drawn.append(None)
+
+    monkeypatch.setattr(CairoRenderer, "_update_play_frame", framed)
+
+    class Spinning(Scene):
+        def construct(self):
+            square = Square().shift(RIGHT * 3).add_updater(lambda m, dt: m.rotate(dt))
+            self.add(square, circles(), Line(RIGHT * 2, RIGHT * 4))
+            self.wait(0.5)
+
+    render(Spinning)
+    frames = [n for n in drawn if n is not None]
+    assert (
+        frames[0] == 41 + 2
+    )  # the still frame once (40 circles, the line), and the box
+    assert set(frames[1:]) == {2}

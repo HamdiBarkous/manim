@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 import sys
 import warnings
-from collections.abc import Iterable
+from collections.abc import Container, Iterable
 from operator import attrgetter, methodcaller
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +69,13 @@ class CairoRenderer:
         self.time = 0.0
         self.static_image: PixelArray | None = None
         self._static_members: set[Mobject] = set()
+        # What moves in the current play, the still frame (the scene painted
+        # without it), the still mobjects' boxes and their paths built once.
+        self._moving: set[Mobject] = set()
+        self._still: tuple[tuple, PixelArray, dict[Mobject, _Box | None]] | None = None
+        self._paths: dict[Mobject, Any] = {}
+        self._scratch: PixelArray | None = None
+        self._painted_on: tuple | None = None
         self._static_watch: _StaticFrameWatch | None = None
         self._resplits = 0
 
@@ -210,18 +218,133 @@ class CairoRenderer:
         self.add_frame(self.get_frame())
 
     def _update_play_frame(self, scene: Scene) -> None:
-        """Draw a frame of a play: the static frame, then every mobject it
-        does not hold, in the scene's draw order as it is now, so that
-        mobjects added during the play are drawn too. A mobject sorted
-        before one the static frame holds splits the scene again.
+        """Draw a frame of a play.
+
+        Only what moves, and what is drawn over it, can differ from one
+        frame to the next. So the frame starts from the still frame, the
+        scene painted once without what moves, and only the box around
+        what moves is painted again: on a scratch frame whose box holds the
+        static frame, everything after the static frame that moves or
+        reaches the box is drawn in the scene's draw order as it is now,
+        with no clip, and the box is copied into the frame. Outside the box
+        nothing that moves paints; inside it everything that can paint does,
+        in order, as painting the whole scene would.
+
+        A camera that moves, or nothing still after the static frame, draws
+        everything after the static frame. A mobject sorted before one the
+        static frame holds splits the scene again.
         """
+        camera = self.camera
+        if self.static_image is not None and self._camera_state() != self._painted_on:
+            self.save_static_frame_data(scene, scene.static_mobjects)
         order = self._draw_order(scene)
         if self.static_image is not None and not self._follows_static_frame(order):
             self._resplit(scene)
             order = self._draw_order(scene)
         if self.static_image is not None:
             order = [m for m in order if m not in self._static_members]
-        self.update_frame(scene, mobjects=order, include_submobjects=False)
+        # Families as they are now: become() gives a moving mobject new members.
+        moving = {m for mob in self._moving for m in mob.get_family()}
+        still = [m for m in order if m not in moving]
+        if type(camera) is not Camera or not still:
+            self.update_frame(scene, mobjects=order, include_submobjects=False)
+            return
+
+        base = self.static_image if self.static_image is not None else camera.background
+        key = (self._camera_state(), *map(id, still))
+        if self._still is None or self._still[0] != key:
+            camera.set_frame_to_background(base)
+            self._draw(still, set(still))
+            boxes = {m: self._box(m) for m in still}
+            self._still = (key, camera.pixel_array.copy(), boxes)
+        _, still_frame, boxes = self._still
+
+        box = _union(self._box(m) for m in order if m in moving)
+        if box is not None:
+            x0, y0, x1, y1 = box
+            box = (
+                max(x0, 0),
+                max(y0, 0),
+                min(x1, camera.pixel_width),
+                min(y1, camera.pixel_height),
+            )
+        if box is None or box[2] <= box[0] or box[3] <= box[1]:
+            camera.set_frame_to_background(still_frame)
+            return
+        x0, y0, x1, y1 = box
+        if self._scratch is None or self._scratch.shape != camera.pixel_array.shape:
+            self._scratch = np.empty_like(camera.pixel_array)
+        scratch, frame = self._scratch, camera.pixel_array
+        scratch[y0:y1, x0:x1] = base[y0:y1, x0:x1]
+        drawn = [m for m in order if m in moving or _meets(boxes[m], box)]
+        camera.pixel_array = scratch
+        try:
+            self._draw(drawn, boxes)
+        finally:
+            camera.pixel_array = frame
+        camera.set_frame_to_background(still_frame)
+        frame[y0:y1, x0:x1] = scratch[y0:y1, x0:x1]
+
+    def _draw(self, mobjects: list[Mobject], still: Container[Mobject]) -> None:
+        """Draw in order, as the camera captures them, but a still VMobject
+        from its path built once in the split.
+        """
+        camera = self.camera
+        ctx = camera.get_cairo_context(camera.pixel_array)
+        run: list[Mobject] = []
+        for m in mobjects:
+            if (
+                m not in still
+                or not isinstance(m, VMobject)
+                or m.get_background_image()
+            ):
+                run.append(m)
+                continue
+            if run:
+                camera.capture_mobjects(run, include_submobjects=False)
+                run = []
+            path = self._paths.get(m)
+            if path is None:
+                camera.set_cairo_context_path(ctx, m)
+                self._paths[m] = ctx.copy_path()
+            else:
+                ctx.new_path()
+                ctx.append_path(path)
+            camera.apply_stroke(ctx, m, background=True)
+            camera.apply_fill(ctx, m)
+            camera.apply_stroke(ctx, m)
+        if run:
+            camera.capture_mobjects(run, include_submobjects=False)
+
+    def _box(self, mobject: Mobject) -> _Box | None:
+        """The pixels a mobject can touch: its points' box, grown by its
+        stroke, which a miter join can carry far past the corner.
+        """
+        points = mobject.points
+        if not len(points):
+            return None
+        camera = self.camera
+        sx = camera.pixel_width / camera.frame_width
+        sy = camera.pixel_height / camera.frame_height
+        cx, cy = camera.frame_center[:2]
+        width = 0.0
+        if isinstance(mobject, VMobject):
+            width = max(
+                mobject.get_stroke_width(), mobject.get_stroke_width(background=True)
+            )
+            width *= camera.cairo_line_width_multiple * sx
+        grow = _MITER_LIMIT * width / 2 + 2  # and a pixel of antialiasing each side
+        return (
+            math.floor((points[:, 0].min() - cx) * sx + camera.pixel_width / 2 - grow),
+            math.floor((cy - points[:, 1].max()) * sy + camera.pixel_height / 2 - grow),
+            math.ceil((points[:, 0].max() - cx) * sx + camera.pixel_width / 2 + grow),
+            math.ceil((cy - points[:, 1].min()) * sy + camera.pixel_height / 2 + grow),
+        )
+
+    def _camera_state(self) -> tuple:
+        """What a frame takes from the camera rather than from a mobject."""
+        c = self.camera
+        return c.background_color, c.background_opacity, id(c.background)
 
     def _draw_order(self, scene: Scene) -> list[Mobject]:
         return self.camera.get_mobjects_to_display(
@@ -247,11 +370,6 @@ class CairoRenderer:
         changed = watch.changed()
         if changed is None:
             return
-        if not changed:
-            moving = watch.resettle()
-            if moving is not None:
-                scene.moving_mobjects = moving
-                return
         self._resplit(scene, changed)
 
     def _resplit(self, scene: Scene, changed: Iterable[Mobject] = ()) -> None:
@@ -269,6 +387,8 @@ class CairoRenderer:
         moving, static = scene.get_moving_and_static_mobjects(scene.animations)
         if static != scene.static_mobjects:
             self.save_static_frame_data(scene, static)
+        self._moving = scene._moving_set(scene.animations)
+        self._still, self._paths = None, {}
         scene.moving_mobjects, scene.static_mobjects = moving, static
         if watch is not None:
             self._static_watch = _StaticFrameWatch(scene)
@@ -343,6 +463,9 @@ class CairoRenderer:
         """
         self.static_image = None
         self._static_members = set(static_mobjects or ())
+        self._moving = scene._moving_set(scene.animations or [])
+        self._still, self._paths = None, {}
+        self._painted_on = self._camera_state()
         if not static_mobjects:
             return None
         # Already each mobject of the family, in draw order.
@@ -408,6 +531,27 @@ _DRAWN: list[tuple[type[Mobject], tuple[str, ...], tuple[str, ...]]] = [
 
 # Resplitting more often than this in one play gives up on the static frame.
 _MAX_RESPLITS = 3
+
+# cairo's default miter limit: a miter join reaches this many half widths out.
+_MITER_LIMIT = 10
+
+_Box = tuple[int, int, int, int]  # left, top, right, bottom, in pixels
+
+
+def _union(boxes: Iterable[_Box | None]) -> _Box | None:
+    found = [b for b in boxes if b is not None]
+    if not found:
+        return None
+    return (
+        min(b[0] for b in found),
+        min(b[1] for b in found),
+        max(b[2] for b in found),
+        max(b[3] for b in found),
+    )
+
+
+def _meets(a: _Box | None, b: _Box) -> bool:
+    return a is not None and a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
 def _references(namespace: dict[str, Any], name: str) -> int:
@@ -529,10 +673,11 @@ class _Pool:
 
 
 class _StaticFrameWatch:
-    """Watches, during a play, the mobjects painted once into the static frame.
+    """Watches, during a play, every mobject that does not move: those
+    painted once into the static frame and into the still frame.
 
-    They are the mobjects before the first one that is animated or has
-    updaters, so nothing is expected to change them. Yet code that runs
+    They are neither animated nor updated, so nothing is expected to change
+    them. Yet code that runs
     every frame, like an updater, can change any mobject, not only its
     own, and add or remove mobjects. :meth:`changed` notices, comparing
     what the camera draws of each against a snapshot. The camera's own
@@ -542,20 +687,12 @@ class _StaticFrameWatch:
     def __init__(self, scene: Scene) -> None:
         self.scene = scene
         self.roots = _roots(scene)
-        moving = set(scene.moving_mobjects)
+        renderer = scene.renderer
+        assert isinstance(renderer, CairoRenderer)
+        moving = renderer._moving
         self.members = [
             m for m in extract_mobject_family_members(self.roots) if m not in moving
         ]
-        members = set(self.members)
-        self.static_roots = [
-            r for r in self.roots if members.intersection(r.get_family())
-        ]
-        # Static roots wholly static and first: then adding or removing
-        # others leaves the static frame as it is.
-        first = self.roots[: len(self.static_roots)] == self.static_roots
-        self.clean = first and not any(
-            moving.intersection(r.get_family()) for r in self.static_roots
-        )
         camera = scene.renderer.camera
         assert isinstance(camera, Camera)
         self.camera_mobjects = [
@@ -609,7 +746,8 @@ class _StaticFrameWatch:
     def changed(self) -> list[Mobject] | None:
         """The watched mobjects changed since the snapshot, all of them if
         the camera moved; an empty list if only which mobjects are in the
-        scene changed; ``None`` if nothing did.
+        scene changed, which splits the scene again as well; ``None`` if
+        nothing did.
         """
         try:
             found = self._changed()
@@ -624,19 +762,6 @@ class _StaticFrameWatch:
         if _roots(self.scene) != self.roots:
             return []
         return None
-
-    def resettle(self) -> list[Mobject] | None:
-        """After mobjects were only added or removed: the new moving
-        mobjects if the static frame still holds, else ``None``.
-        """
-        roots = _roots(self.scene)
-        n = len(self.static_roots)
-        if not self.clean or roots[:n] != self.static_roots:
-            return None
-        self.roots = roots
-        return extract_mobject_family_members(
-            roots[n:], use_z_index=self.scene.renderer.camera.use_z_index
-        )
 
     def _changed(self) -> list[Mobject]:
         found = [m for kind in self.kinds for m in kind.changed()]
