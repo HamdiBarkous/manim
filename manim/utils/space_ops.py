@@ -206,11 +206,16 @@ def rotate_vector(
     ValueError
         If vector is not of dimension 2 or 3.
     """
+    return _rotate_by(rotation_matrix(angle, axis), vector)
+
+
+def _rotate_by(matrix: np.ndarray, vector: Vector3DLike) -> Vector3D:
+    """Apply a rotation matrix already built, as :func:`rotate_vector` does."""
     if len(vector) > 3:
         raise ValueError("Vector must have the correct dimensions.")
     if len(vector) == 2:
         vector = np.append(vector, 0)
-    return rotation_matrix(angle, axis) @ vector
+    return matrix @ vector
 
 
 def thick_diagonal(dim: int, thickness: int = 2) -> MatrixMN:

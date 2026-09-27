@@ -774,3 +774,39 @@ def test_pointwise_become_partial_where_vmobject_is_self():
         ]
     )
     np.testing.assert_allclose(sq.points, expected_points)
+
+
+def test_rotating_the_sheen_of_a_family_builds_one_rotation(monkeypatch):
+    from manim.constants import OUT, RIGHT, UP
+    from manim.mobject.types import vectorized_mobject
+    from manim.utils import space_ops
+
+    group = VGroup(Square().set_sheen_direction(UP), VGroup(Circle(), Line()))
+    expected = [
+        space_ops.rotate_vector(m.sheen_direction, 0.7, OUT + RIGHT)
+        for m in group.get_family()
+    ]
+    built = []
+    real = space_ops.rotation_matrix
+
+    def counted(*args, **kwargs):
+        built.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(space_ops, "rotation_matrix", counted)
+    monkeypatch.setattr(vectorized_mobject, "rotation_matrix", counted, raising=False)
+    group.rotate_sheen_direction(0.7, OUT + RIGHT)
+    assert len(built) == 1
+    for m, direction in zip(group.get_family(), expected, strict=True):
+        assert np.array_equal(m.sheen_direction, direction)
+
+
+def test_a_sheen_direction_without_z_is_rotated_as_rotate_vector_does():
+    from manim.utils.space_ops import rotate_vector
+
+    square = Square()
+    square.sheen_direction = np.array([1.0, 0.0])
+    square.rotate_sheen_direction(0.7)
+    assert np.array_equal(
+        square.sheen_direction, rotate_vector(np.array([1.0, 0.0]), 0.7)
+    )

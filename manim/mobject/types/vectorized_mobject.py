@@ -45,7 +45,12 @@ from manim.utils.iterables import (
     stretch_array_to_length,
     tuplify,
 )
-from manim.utils.space_ops import rotate_vector, shoelace_direction
+from manim.utils.space_ops import (
+    _rotate_by,
+    rotate_vector,
+    rotation_matrix,
+    shoelace_direction,
+)
 
 if TYPE_CHECKING:
     from typing import Self
@@ -703,15 +708,9 @@ class VMobject(Mobject):
         --------
         :meth:`~.VMobject.set_sheen_direction`
         """
-        if family:
-            for submob in self.get_family():
-                submob.sheen_direction = rotate_vector(
-                    submob.sheen_direction,
-                    angle,
-                    axis,
-                )
-        else:
-            self.sheen_direction = rotate_vector(self.sheen_direction, angle, axis)
+        matrix = rotation_matrix(angle, axis)  # the same for every submobject
+        for submob in self.get_family() if family else [self]:
+            submob.sheen_direction = _rotate_by(matrix, submob.sheen_direction)
         return self
 
     def set_sheen(
